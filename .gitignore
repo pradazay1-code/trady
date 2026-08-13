@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime state — machine-specific, regenerated
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+reports/
+config.json
+
+# Derived in seconds from knowledge/extracted via tools/build_kb.py (13MB)
+knowledge/kb.sqlite
+knowledge/raw/
+!data/.gitkeep
+!reports/.gitkeep

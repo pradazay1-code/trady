@@ -1,0 +1,67 @@
+[
+  {
+    "slug": "Day_Trading_For_Dummies_3rd_edition_2014",
+    "source_file": "82655dd1-Day_Trading_For_Dummies_3rd_edition_2014.epub",
+    "title": "Day Trading For Dummies",
+    "creator": "Ann C. Logue, MBA",
+    "date": "2013-12-30T09:23:41+00:00",
+    "spine_docs": 375,
+    "extracted_docs": 375,
+    "chars": 796401,
+    "words": 133345,
+    "lines": 8882,
+    "output": "knowledge/extracted/Day_Trading_For_Dummies_3rd_edition_2014.txt"
+  },
+  {
+    "slug": "Trading_For_Dummies_2nd_edition_2009",
+    "source_file": "a79b0b5a-Trading_For_Dummies_2nd_edition_2009.epub",
+    "title": "776ed46f-ff97-4b26-aea9-805ba130198c",
+    "creator": "Unknown",
+    "date": "",
+    "spine_docs": 315,
+    "extracted_docs": 314,
+    "chars": 832569,
+    "words": 133805,
+    "lines": 5985,
+    "output": "knowledge/extracted/Trading_For_Dummies_2nd_edition_2009.txt"
+  },
+  {
+    "slug": "Day_Trading_For_Dummies_2008",
+    "source_file": "aeaa4785-Day_Trading_For_Dummies_2008.epub",
+    "title": "Unknown",
+    "creator": "Unknown",
+    "date": "2007-10-02T13:41:54+00:00",
+    "spine_docs": 278,
+    "extracted_docs": 277,
+    "chars": 740805,
+    "words": 124180,
+    "lines": 4857,
+    "output": "knowledge/extracted/Day_Trading_For_Dummies_2008.txt"
+  },
+  {
+    "slug": "Fundamental_Analysis_For_Dummies_2009",
+    "source_file": "e894e812-Fundamental_Analysis_For_Dummies_2009.epub",
+    "title": "untitled",
+    "creator": "Unknown",
+    "date": "2009-09-30T22:58:11+00:00",
+    "spine_docs": 400,
+    "extracted_docs": 400,
+    "chars": 791533,
+    "words": 130051,
+    "lines": 7100,
+    "output": "knowledge/extracted/Fundamental_Analysis_For_Dummies_2009.txt"
+  },
+  {
+    "slug": "Getting_Started_in_Candlestick_Charting_2008",
+    "source_file": "fceea37b-Getting_Started_in_Candlestick_Charting_2008.epub",
+    "title": "Unknown",
+    "creator": "Unknown",
+    "date": "2008-03-17T18:25:46+00:00",
+    "spine_docs": 41,
+    "extracted_docs": 41,
+    "chars": 423220,
+    "words": 72723,
+    "lines": 3637,
+    "output": "knowledge/extracted/Getting_Started_in_Candlestick_Charting_2008.txt"
+  }
+]

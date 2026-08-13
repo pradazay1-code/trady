@@ -1,0 +1,311 @@
+# TRADY RULEBOOK
+#
+# Every rule the agent enforces, with the source it came from. This file is
+# documentation, not runtime config — the executable values live in
+# trady/config.py. When the two disagree, config.py wins and this file is stale;
+# keep them in sync.
+#
+# Sources:
+#   DTFD14 = Day Trading For Dummies, 3rd ed. (Logue, 2014)
+#   DTFD08 = Day Trading For Dummies (Logue, 2008)
+#   TFD    = Trading For Dummies, 2nd ed. (Griffis & Epstein, 2009)
+#   FAFD   = Fundamental Analysis For Dummies (Krantz, 2009)
+#   CSC    = Getting Started in Candlestick Charting (Logan, 2008)
+
+meta:
+  version: 1
+  updated: 2026-08-13
+
+# =====================================================================
+# 1. NON-NEGOTIABLE LAW
+# =====================================================================
+regulatory:
+  pattern_day_trader:
+    source: DTFD14 ch.5 "Following special rules for pattern day traders"
+    rule: >
+      FINRA (NASD Rule 2520) defines a day trade as buying and selling the same
+      security on the same day in a margin account. Four or more day trades in
+      five rolling business days makes the account a pattern day trader, which
+      requires at least $25,000 equity at the start of the trading day.
+    enforcement:
+      - Under $25,000, the agent allows at most 3 day trades per rolling 5
+        business days and holds 1 back in reserve for an emergency exit,
+        so the practical budget is 2.
+      - An entry that would have to close the same day is refused outright when
+        the budget is spent. There is no override.
+      - The exemption (day trades <= 6% of total trades) is deliberately NOT
+        relied on; it is too easy to miscount and the penalty is a 90-day
+        restriction.
+    consequence_of_breach: 90-day restriction to cash-only trading.
+
+  margin:
+    source: DTFD14 ch.5
+    notes:
+      - Pattern day traders may borrow up to 75% (25% margin); other customers 50%.
+      - Brokers may set stricter limits than FINRA minimums, and Fidelity does.
+      - Default config uses NO leverage (max_gross_exposure_pct 1.0).
+
+  insider_information:
+    source: DTFD14 ch.5 "Watching Out for Insider Trading"
+    rule: >
+      Never act on material non-public information. The agent trades only on
+      published price/volume data and public news. If a tip seems too good to be
+      true, it is.
+
+  circuit_breakers:
+    source: DTFD14 ch.5 "Preparing for Rule Changes in Crisis Conditions"
+    notes:
+      - Market-wide halts at -7%, -13% (pause) and -20% (close for the day).
+      - A single security can be halted after a >10% move in five minutes.
+      - Exchanges may break "clearly erroneous" trades — a fill is not final.
+
+# =====================================================================
+# 2. MONEY MANAGEMENT
+# =====================================================================
+money_management:
+  core_principle:
+    source: DTFD14 ch.6
+    rule: >
+      "You can't trade if you don't have money." Never commit the whole account
+      to one trade. The more trades the account can survive, the lower the
+      probability of ruin.
+
+  gann_ten_percent:
+    source: DTFD14 ch.21 "Applying Gann's 10 Percent Rule"
+    rule: Never place more than 10% of account value in a single trade.
+    config: risk.max_position_pct = 0.10
+
+  fixed_fractional:
+    source: DTFD14 ch.6 "Limiting portions: Fixed fractional"
+    formula: "N = (f x equity) / |trade risk per share|"
+    rule: Risk a fixed small fraction of equity per trade; larger f for lower-risk setups.
+    config: risk.risk_per_trade_pct = 0.0075
+
+  kelly:
+    source: DTFD14 ch.6 "Finding the ideal percentage: Kelly Criterion"
+    formula: "Kelly% = W - (1 - W) / R"
+    rule: >
+      W = win rate, R = avg win / avg loss. Raw Kelly is too aggressive — the
+      book itself recommends half-Kelly when Kelly exceeds ~20%. The agent uses
+      half-Kelly, capped by the Gann 10% rule, and only after 20+ trades of data.
+    config: {risk.kelly_fraction: 0.5, risk.kelly_cap_pct: 0.10}
+
+  fixed_ratio:
+    source: DTFD14 ch.6 "Protecting profits: Fixed ratio" (Ryan Jones)
+    formula: "N = 0.5 x (sqrt(8P/delta + 1) + 1)"
+
+  optimal_f:
+    source: DTFD14 ch.6 "Considering past performance: Optimal F" (Ralph Vince)
+    formula: "N = (equity x F) / worst_loss_pct / price"
+
+  probability_of_ruin:
+    source: DTFD14 ch.6 "Determining your probability of ruin"
+    formula: "R = ((1 - A) / (1 + A)) ^ c   where A = win% - loss%, c = units of capital"
+    rule: Track it. If it is not small, the risk per trade is too large.
+
+  martingale:
+    source: DTFD14 ch.6 & ch.21 "Taking a Risk with the Martingale System"
+    rule: >
+      NOT USED. Doubling after losses only works with infinite capital. The
+      formula is implemented for completeness but the agent never sizes with it.
+    status: implemented_but_disabled
+
+  expectancy:
+    source: DTFD14 ch.6 "Finding your expected return"
+    formula: "E = (win% x avg_win) - (loss% x avg_loss)"
+    rule: If expectancy is negative, do not increase size. Paper-trade until it turns.
+
+  profit_handling:
+    source: DTFD14 ch.6 "Planning for Your Profits", ch.21 "Taking Money off the Table"
+    rule: >
+      Sweep a portion of profits out of the trading account periodically into
+      lower-risk holdings. Trading is risky; diversifying out of it reduces both
+      the risk and the stress.
+    config: risk.withdraw_profit_pct = 0.10
+
+  pyramiding:
+    source: DTFD14 ch.6 "Pyramiding power"
+    rule: >
+      NOT USED by default. Borrowing against unrealised profit magnifies both
+      returns and losses, and one reversal collapses the structure into a margin
+      call.
+    status: disabled
+
+# =====================================================================
+# 3. RISK CONTROL
+# =====================================================================
+risk_control:
+  stops:
+    source: DTFD14 ch.21 "Using Stops", ch.20 "Sticking Too Long with Losing Trades"
+    rules:
+      - Every position has a stop before it is opened. No exceptions.
+      - Stops are placed beyond the level that would invalidate the idea,
+        sized off ATR so they adapt to the instrument's own volatility.
+      - "If a trade isn't working, get out." No averaging down into a loser.
+    config: {risk.stop_atr_multiple: 1.5, risk.max_stop_pct: 0.05}
+
+  reward_risk:
+    source: CSC ch.10 (reward-to-risk ratio); DTFD14 ch.2
+    rule: Reject any setup whose reward-to-risk ratio is below the minimum.
+    config: risk.min_reward_risk = 1.5
+
+  daily_loss_limit:
+    source: DTFD14 ch.21 "Throwing It to the Fates"
+    rule: >
+      "Exceed your daily loss limit, and you'll have even greater losses."
+      At -2% on the day the agent stops opening positions until the next session.
+    config: risk.max_daily_loss_pct = 0.02
+
+  drawdown_halt:
+    rule: At -10% peak-to-trough the agent halts entirely and requires review.
+    config: risk.max_drawdown_halt_pct = 0.10
+
+  overtrading:
+    source: DTFD14 ch.20 "Overtrading"
+    rule: >
+      "Many day traders do better by making fewer trades each day" — commissions
+      and fees take a smaller bite. Hard cap on trades per day.
+    config: risk.max_daily_trades = 8
+
+  consecutive_losses:
+    source: DTFD14 ch.14 (stress), ch.20 "Getting Too Emotionally Involved"
+    rule: >
+      After 3 losses in a row, stop opening positions for the rest of the
+      session. The cool-off resets the next day — it is a brake on tilt, not a
+      permanent ban.
+    config: risk.max_consecutive_losses = 3
+
+  diversification:
+    source: DTFD14 ch.6 "Setting Your Earnings Expectations"
+    rule: Spread risk across positions; cap concurrent positions and gross exposure.
+    config: {risk.max_open_positions: 4, risk.max_gross_exposure_pct: 1.0}
+
+# =====================================================================
+# 4. SESSION DISCIPLINE
+# =====================================================================
+session:
+  opening_gap:
+    source: DTFD14 ch.7 "Mind the gap" — the "gap and crap"
+    rule: >
+      No entries in the first 30 minutes. A gap up invites everyone to sell into
+      it, and the trader who buys the gap gets slammed by that selling pressure.
+    config: session.no_entry_before = "10:00"
+
+  late_entries:
+    rule: No new positions after 15:30 — a day trade needs time to work and to exit.
+    config: session.no_entry_after = "15:30"
+
+  force_flat:
+    source: DTFD14 ch.1 — day traders close out every night
+    rule: All positions closed by 15:55. Overnight gap risk is not day trading.
+    config: session.force_flat_at = "15:55"
+
+  midday:
+    rule: Skip the 11:45–13:15 chop, where liquidity thins and ranges compress.
+    config: session.avoid_lunch_chop = true
+
+# =====================================================================
+# 5. ANALYSIS
+# =====================================================================
+analysis:
+  confluence:
+    source: CSC — "East meets West"; DTFD14 ch.7
+    rule: >
+      No single signal is enough. A candlestick pattern must be corroborated by
+      structure (support/resistance, trend) and volume. A mediocre pattern at a
+      strong level beats a textbook pattern in open space.
+    config: signal.min_confluence_score = 3.0
+
+  directional_prerequisite:
+    source: CSC ch.3 — "The pattern must have something to reverse"
+    rule: >
+      A reversal pattern only counts after a directional move. The same shape in
+      a sideways drift means nothing.
+
+  confirmation:
+    source: CSC ch.3, per-pattern criteria
+    rule: >
+      Patterns the book says require confirmation (hanging man, shooting star,
+      inverted hammer, doji, harami) are scored at ~55% strength until price
+      trades beyond the pattern's real body in the signal's direction. Patterns
+      it says do not (hammer, engulfing, morning/evening star) are actionable at
+      full strength.
+
+  volume:
+    source: DTFD14 ch.8 "Volume"
+    rule: >
+      "The price tells traders what the market knows; the volume tells them how
+      many people in the market know it." A breakout on flat volume is treated as
+      a probable false breakout.
+    config: {signal.require_volume_confirmation: true, signal.volume_surge_ratio: 1.3}
+
+  trend_alignment:
+    source: DTFD14 ch.8 "Contrarian traps"
+    rule: >
+      "The market is always right in the short term." Counter-trend entries are
+      rejected unless there is a confirmed reversal pattern at a real level.
+
+  liquidity:
+    source: CSC ch.6 — start with more heavily traded stocks to avoid fill problems
+    config: {signal.min_price: 5.0, signal.min_avg_volume: 1000000}
+
+# =====================================================================
+# 6. LEARNING AND REVIEW
+# =====================================================================
+learning:
+  journal:
+    source: DTFD14 ch.16 "Keeping a trading diary"
+    rule: >
+      Record why each trade was taken AT THE TIME. "If you wait until later,
+      you'll forget, and you'll change your logic to suit your needs." Rejected
+      signals are recorded too — they are the counterfactual.
+
+  review_cadence:
+    source: DTFD14 ch.16
+    rule: Review after every trade (lightweight) and every day (full).
+
+  do_not_system_hop:
+    source: DTFD14 ch.20 "Switching between Research Systems"
+    rule: >
+      "No system works all the time; if one did, everyone would use it."
+      Adjustments are small and bounded, and nothing changes until there are
+      enough trades to be meaningful.
+    config: {learn.weight_step: 0.05, learn.min_trades_before_adapt: 20}
+
+  overfitting:
+    source: DTFD14 ch.16 "Backtesting" — over-optimisation / curve-fitting
+    rule: >
+      "Human beings have evolved to see patterns, even when no pattern exists."
+      Every parameter change is validated walk-forward across time slices.
+      Prefer settings that stay positive across many slices over the single
+      highest number in a sweep.
+    config: learn.walk_forward_splits = 4
+
+  strategy_probation:
+    rule: >
+      A strategy whose expectancy stays negative over 25+ trades is suspended
+      rather than left to bleed.
+    config: {learn.strategy_probation_trades: 25, learn.strategy_min_expectancy: 0.0}
+
+# =====================================================================
+# 7. EXPECTATIONS — read this one twice
+# =====================================================================
+expectations:
+  base_rate:
+    source: DTFD14 ch.1 and ch.20 "Starting with Unrealistic Expectations"
+    facts:
+      - "Most day traders lose money."
+      - "Some research shows that 80 percent of day traders wash out in the first year."
+      - "Making enough money to cover the value of your time is even tougher."
+  no_guarantees:
+    source: DTFD14 ch.7
+    rule: >
+      "Don't be fooled by anyone offering to sell you a guaranteed system for
+      making money in day trading. Anyone with a surefire system has already made
+      a fortune and retired." This system is not exempt from that sentence.
+  capital:
+    source: DTFD14 ch.20 "Not Committing the Time and Money to Do It Right"
+    rule: Only trade risk capital — money you can afford to lose entirely.
+  past_performance:
+    source: DTFD14 ch.16
+    rule: "Past performance is not indicative of future results." Applies to backtests.
