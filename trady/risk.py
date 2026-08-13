@@ -216,20 +216,34 @@ def position_size(
 
 
 def stop_and_target(
-    entry: float, atr_value: float, direction: str, cfg: RiskConfig
+    entry: float,
+    atr_value: float,
+    direction: str,
+    cfg: RiskConfig,
+    noise_floor: float = 0.0,
 ) -> tuple[float, float]:
-    """ATR-based stop and target for a long or short entry."""
+    """ATR-based stop and target, floored so noise cannot take the stop out.
+
+    `noise_floor` is the recent median true range. A stop nearer than that is
+    inside one bar's ordinary excursion and will be hit on the entry bar itself,
+    regardless of whether the idea was right. The target keeps its distance in
+    the same units so the reward:risk ratio stays honest after the floor binds.
+    """
     if atr_value <= 0:
         atr_value = entry * 0.01
+
+    stop_dist = cfg.stop_atr_multiple * atr_value
+    floor = cfg.stop_noise_floor_mult * max(noise_floor, 0.0)
+    if floor > stop_dist:
+        stop_dist = floor
+
+    # Scale the target off the same distance, preserving the intended ratio.
+    ratio = cfg.target_atr_multiple / max(cfg.stop_atr_multiple, 1e-9)
+    target_dist = stop_dist * ratio
+
     if direction == "long":
-        return (
-            entry - cfg.stop_atr_multiple * atr_value,
-            entry + cfg.target_atr_multiple * atr_value,
-        )
-    return (
-        entry + cfg.stop_atr_multiple * atr_value,
-        entry - cfg.target_atr_multiple * atr_value,
-    )
+        return entry - stop_dist, entry + target_dist
+    return entry + stop_dist, entry - target_dist
 
 
 def trail_stop(
@@ -354,6 +368,7 @@ class AccountState:
     consecutive_losses: int = 0
     halted: bool = False
     halt_reason: str = ""
+    open_symbols: list[str] = field(default_factory=list)
 
 
 class RiskManager:
@@ -465,6 +480,24 @@ class RiskManager:
                 f"{self.risk.max_open_positions} positions",
                 checks,
             )
+
+        # Sector concentration. Three tech longs are one tech position at 3x
+        # size — they lose together on the same headline.
+        sector = self.cfg.sectors.get(symbol.upper()) if symbol else None
+        if sector:
+            held = sum(
+                1 for s in state.open_symbols
+                if self.cfg.sectors.get(s.upper()) == sector
+            )
+            checks["sector"] = f"{sector}: {held} open"
+            if held >= self.risk.max_sector_concentration:
+                return RiskDecision(
+                    False,
+                    f"already holding {held} {sector} position(s), at the "
+                    f"{self.risk.max_sector_concentration} limit — correlated "
+                    "positions concentrate risk rather than spread it",
+                    checks,
+                )
 
         # Gross exposure.
         exposure = (state.gross_exposure + new_notional) / max(state.equity, 1e-9)

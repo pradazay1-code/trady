@@ -159,6 +159,7 @@ class TradingSession:
             consecutive_losses=self.state.consecutive_losses,
             halted=self.state.halted,
             halt_reason=self.state.halt_reason,
+            open_symbols=list(self.state.positions),
         )
 
     # -----------------------------------------------------------------

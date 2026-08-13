@@ -355,17 +355,30 @@ def generate(
     if not np.isfinite(a) or a <= 0:
         a = price * 0.01
     entry = price
-    stop, target = stop_and_target(entry, a, direction, cfg.risk)
+    # Recent median true range: the scale of ordinary single-bar noise. A stop
+    # inside this gets hit on the entry bar by the bar's own wick.
+    n = cfg.risk.stop_noise_floor_bars
+    recent = frame.tail(n)
+    noise = float(
+        (recent["high"].astype(float) - recent["low"].astype(float)).median()
+    ) if len(recent) else 0.0
+    if not np.isfinite(noise):
+        noise = 0.0
+    stop, target = stop_and_target(entry, a, direction, cfg.risk, noise_floor=noise)
 
-    # Prefer a structural stop just beyond the level that would invalidate the idea.
+    # Place the stop BEYOND the level that would invalidate the idea, never
+    # inside it. A long is wrong once support breaks, so the stop belongs below
+    # support; taking the tighter of the two would park it in the noise between
+    # entry and the level, where an ordinary wick removes the position before
+    # the idea has been tested at all.
     if direction == "long" and snap["support"]:
         structural = snap["support"] * 0.999
         if structural < entry:
-            stop = max(stop, structural) if structural > stop else stop
+            stop = min(stop, structural)
     elif direction == "short" and snap["resistance"]:
         structural = snap["resistance"] * 1.001
         if structural > entry:
-            stop = min(stop, structural) if structural < stop else stop
+            stop = max(stop, structural)
 
     # Target the opposing level when it is closer than the ATR target.
     if direction == "long" and snap["resistance"]:

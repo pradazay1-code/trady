@@ -168,6 +168,7 @@ fitting to five trades is curve-fitting.
 | Drawdown halt | -10% peak-to-trough | — |
 | Max trades/day | 8 | overtrading |
 | Consecutive losses | 3, cool off till next session | tilt control |
+| Sector concentration | 2 positions per sector | correlated risk |
 | No entries before | 10:00 | the "gap and crap" |
 | No entries after | 15:30 | needs time to work |
 | Force flat | 15:55 | day traders close out |
@@ -175,6 +176,31 @@ fitting to five trades is curve-fitting.
 Full citations in `knowledge/rulebook.yaml`.
 
 ---
+
+## Tests
+
+```bash
+pip install pytest
+python3 -m pytest tests/ -q          # 211 tests, ~6 min
+python3 -m pytest tests/test_risk.py -q   # risk only, <1s
+```
+
+The suite is weighted toward the parts where a bug costs money rather than a bad
+trade:
+
+- **`test_risk.py`** — all five sizing formulas pinned to the books' worked
+  examples, the PDT budget including the rolling-business-day window, every
+  risk gate, sector concentration.
+- **`test_patterns.py`** — each pattern's book criteria, including the negative
+  cases: the same candle shape in a sideways drift must NOT be reported,
+  because a reversal needs something to reverse.
+- **`test_backtest.py`** — the look-ahead test is the important one. It runs the
+  same backtest on 1,200 bars and on 2,000, then asserts trades inside the
+  shared prefix are identical. If the engine could see the future, appending
+  data would change the past.
+- **`test_execution.py`** — Fidelity CSV parsing against text shaped like a real
+  export (disclaimer preamble, currency symbols, legal footer), broker fills and
+  slippage, and the learning loop's bounds.
 
 ## Layout
 
@@ -223,7 +249,7 @@ python3 -m trady kb --topics
 
 ## Status
 
-Working and tested end-to-end offline. Before risking money:
+Working, 211 tests passing, verified end to end offline. Before risking money:
 
 1. Backtest on **real** data for your symbols — synthetic proves nothing about edge.
 2. Walk-forward validate: `python3 -m trady backtest --walk-forward`.

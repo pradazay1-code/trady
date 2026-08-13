@@ -282,7 +282,7 @@ class Backtester:
                                    for s, p in open_positions.items() if s in bars),
                 realized_pnl_today=realized_today, trades_today=trades_today,
                 consecutive_losses=consecutive_losses, halted=halted,
-                halt_reason=halt_reason,
+                halt_reason=halt_reason, open_symbols=list(open_positions),
             )
             if not halted:
                 should, why = rm.should_halt(state)

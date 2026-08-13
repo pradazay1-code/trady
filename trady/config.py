@@ -37,6 +37,12 @@ class RiskConfig:
     target_atr_multiple: float = 2.5
     min_reward_risk: float = 1.5  # reject setups below this R:R
     max_stop_pct: float = 0.05  # never risk >5% adverse move per share
+    # A stop closer than one bar's ordinary excursion is taken out by noise on
+    # the entry bar itself. ATR is an *average* range, so a 1.5x ATR stop still
+    # sits inside any above-average bar — and volatility clusters. The stop is
+    # floored at this multiple of the recent median true range.
+    stop_noise_floor_mult: float = 1.25
+    stop_noise_floor_bars: int = 20
     use_trailing_stop: bool = True
     trail_atr_multiple: float = 2.0
     breakeven_at_r: float = 1.0  # move stop to breakeven after +1R
@@ -46,6 +52,8 @@ class RiskConfig:
     max_daily_trades: int = 8  # overtrading is a named book mistake
     max_open_positions: int = 4
     max_consecutive_losses: int = 3  # cool-off trigger
+    # Correlated positions are one position wearing three hats: three mega-cap
+    # tech longs all lose together on the same macro headline. Capped by sector.
     max_sector_concentration: int = 2
 
     # --- Portfolio guards ------------------------------------------------
@@ -171,6 +179,23 @@ class Config:
     bar_interval: str = "5m"
     history_days: int = 60
     timezone: str = "America/New_York"
+
+    # Sector map for the concentration limit. Symbols absent from this map are
+    # treated as their own sector (i.e. unconstrained), so an incomplete map
+    # never silently blocks trades — it only ever constrains what it knows.
+    sectors: dict[str, str] = field(
+        default_factory=lambda: {
+            "AAPL": "tech", "MSFT": "tech", "NVDA": "tech", "AMD": "tech",
+            "GOOGL": "tech", "META": "tech", "AVGO": "tech", "INTC": "tech",
+            "AMZN": "consumer", "TSLA": "consumer", "HD": "consumer",
+            "NKE": "consumer", "SBUX": "consumer",
+            "JPM": "financials", "BAC": "financials", "GS": "financials",
+            "WFC": "financials", "MS": "financials",
+            "XOM": "energy", "CVX": "energy", "COP": "energy",
+            "JNJ": "health", "UNH": "health", "PFE": "health", "LLY": "health",
+            "SPY": "index", "QQQ": "index", "IWM": "index", "DIA": "index",
+        }
+    )
 
     data_dir: Path = field(default=REPO_ROOT / "data")
     journal_db: Path = field(default=REPO_ROOT / "data" / "journal.sqlite")
