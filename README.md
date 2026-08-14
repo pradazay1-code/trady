@@ -71,6 +71,56 @@ judging profitability** — it is a random walk, so any "profit" on it is noise.
 
 ---
 
+## Phone alerts
+
+```bash
+export TRADY_NTFY_TOPIC=trady-9f3k2m8x1q      # long and unguessable
+python3 -m trady notify test --channels ntfy  # confirm it reaches your phone
+python3 -m trady watch --channels ntfy        # live loop, alerts as they fire
+python3 -m trady notify gate                  # am I validated for live yet?
+```
+
+Channels: `ntfy` (free, no account), `pushover`, `telegram`, `email` (also
+reaches SMS via carrier gateways), `console`.
+
+Every alert carries the whole trade — symbol, side, quantity, entry, stop,
+target, reward:risk, and the reasoning:
+
+```
+📈 BUY AAPL
+
+BUY 37 AAPL @ 214.35
+
+Stop      211.90   (risk $91)
+Target    219.20   (R:R 2.15)
+
+Setup: reversal  ·  confluence 3.42
+Why:
+  • bullish engulfing (confirmed)
+  • price 0.4% above support 213.10 (strength 0.99)
+  • volume 2.1x its 20-bar average
+
+PDT: 2 day trade(s) left this window
+```
+
+### The validation gate
+
+Alerts are stamped **PAPER MODE — do not place this order** until the strategy
+has earned the right to be traded. Three conditions, all required:
+
+- at least 50 closed trades on record
+- positive measured expectancy over those trades
+- at least 50 of them from **real** market data, not synthetic bars
+
+A push notification carries the authority of advice. Until those checks pass,
+this system's output is an untested program's opinion, and the stamp says so.
+`notify gate` shows exactly what is still blocking.
+
+See **[FIDELITY_PLAYBOOK.md](FIDELITY_PLAYBOOK.md)** for turning an alert into a
+Fidelity order, including bracket (OTOCO) orders.
+
+---
+
 ## The daily loop
 
 ```bash
@@ -172,6 +222,7 @@ fitting to five trades is curve-fitting.
 | No entries before | 10:00 | the "gap and crap" |
 | No entries after | 15:30 | needs time to work |
 | Force flat | 15:55 | day traders close out |
+| Live alerts | require 50+ real profitable trades | validation gate |
 
 Full citations in `knowledge/rulebook.yaml`.
 
@@ -181,7 +232,7 @@ Full citations in `knowledge/rulebook.yaml`.
 
 ```bash
 pip install pytest
-python3 -m pytest tests/ -q          # 211 tests, ~6 min
+python3 -m pytest tests/ -q          # 238 tests, ~7 min
 python3 -m pytest tests/test_risk.py -q   # risk only, <1s
 ```
 
@@ -201,6 +252,9 @@ trade:
 - **`test_execution.py`** — Fidelity CSV parsing against text shaped like a real
   export (disclaimer preamble, currency symbols, legal footer), broker fills and
   slippage, and the learning loop's bounds.
+- **`test_notify.py`** — alert content (every alert must carry a stop), and the
+  validation gate: a winning strategy on synthetic data must still fail to
+  validate.
 
 ## Layout
 
@@ -219,6 +273,7 @@ trady/
   learn.py        evidence attribution -> weight and risk adjustment
   reporting.py    daily, cumulative, and HTML reports
   session.py      the trading day
+  notify.py       phone alerts + the live-trading validation gate
   cli.py          command line
 
 knowledge/
@@ -249,7 +304,7 @@ python3 -m trady kb --topics
 
 ## Status
 
-Working, 211 tests passing, verified end to end offline. Before risking money:
+Working, 238 tests passing, verified end to end offline. Before risking money:
 
 1. Backtest on **real** data for your symbols — synthetic proves nothing about edge.
 2. Walk-forward validate: `python3 -m trady backtest --walk-forward`.

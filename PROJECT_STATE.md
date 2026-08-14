@@ -3,16 +3,43 @@
 Session-to-session memory. Read this first when resuming; update it before
 stopping. Nothing important should live only in a chat transcript.
 
-**Last updated:** 2026-08-13 (session 2)
+**Last updated:** 2026-08-13 (session 3)
 **Branch:** `claude/affectionate-wozniak-n301u3`
 
 ---
 
 ## Where things stand
 
-Session 1 built the system. Session 2 tested it properly and found two real
-bugs, one of which was materially damaging. Still nothing has touched a real
-account.
+Session 1 built the system. Session 2 tested it and found a materially damaging
+stop-placement bug. Session 3 added phone alerts and the Fidelity playbook.
+Still nothing has touched a real account.
+
+### Session 3 — what changed
+
+**Phone alerts** (`trady/notify.py`). Five channels: ntfy (free, no account),
+Pushover, Telegram, email/SMS gateway, console. Alerts fire on entry, exit,
+risk halt and session close, wired into `TradingSession`. New CLI: `watch`
+(real-time loop) and `notify test|gate`.
+
+Every alert carries the complete trade — symbol, side, quantity, entry, stop,
+target, R:R, reasoning, and remaining PDT budget. An alert that says only
+"BUY AAPL" invites a position with no exit plan, so the formatter cannot
+produce one.
+
+**Validation gate** (`notify.AlertGate`). Alerts are stamped
+`PAPER MODE — do not place this order` unless all three hold: 50+ closed
+trades, positive measured expectancy, and 50+ of those trades from real market
+data rather than synthetic bars. The user asked for live signals today; the
+honest answer is that the strategy has never seen a real bar and has negative
+expectancy on the only data it has seen. The gate encodes that rather than
+relying on anyone remembering it.
+
+**FIDELITY_PLAYBOOK.md** — account setup (cash vs margin, PDT, good-faith
+violations), Active Trader Pro, OTOCO bracket orders as the core mechanism,
+alert-field-to-ticket-field mapping, the hour-by-hour trading day, order types,
+costs, and honest sequencing (today → week 1 → weeks 2-6 → after validation).
+
+**27 new tests** (`tests/test_notify.py`), 238 total.
 
 ### Session 2 — what changed
 
@@ -92,11 +119,19 @@ map are unconstrained, so an incomplete map never silently blocks trades.
 - Sector map covers ~30 common symbols; anything else is unconstrained.
 - News and fundamentals are indexed but not wired into live signals.
 - Short selling assumes borrow is available; no locate check.
+- Alert channels are unverified against live services — the sandbox blocks
+  ntfy.sh, Pushover and Telegram, so delivery was tested through the console
+  channel and the dry-run path only. `notify test` on a real machine is the
+  first thing to run.
+- `watch` polls on an interval; it is not a streaming/websocket feed. At a
+  5-minute interval a signal can be up to 5 minutes stale.
 
 ---
 
 ## Next session — suggested order
 
+0. **Confirm alerts reach the phone**: `notify test --channels ntfy` on a
+   machine with network access.
 1. **Real data.** `python3 -m trady backtest AAPL MSFT NVDA --record` with
    yfinance reachable. Everything below is meaningless until this is done.
 2. **Walk-forward it.** If expectancy is not positive across most slices, fix the
@@ -136,3 +171,8 @@ what the agent has changed about itself.
 - **Bounded weight adjustment.** The books name system-hopping as a failure mode.
 - **Stops go beyond the level, never inside it.** A stop between entry and the
   invalidating level tests nothing except whether the market wiggles.
+- **Alerts are gated on measured performance, not on a config flag.** A push
+  notification reads as advice; it should only carry that weight once the
+  strategy has earned it. The gate is deliberately not overridable by a flag.
+- **Every alert must contain a stop.** The formatter cannot emit an entry
+  without one.

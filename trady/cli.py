@@ -26,6 +26,7 @@ from .indicators import enrich
 from .journal import Journal, compute_stats, stats_by
 from .knowledge import KnowledgeBase, explain
 from .learn import Learner, evidence_performance, sweep
+from .notify import AlertGate, Notifier
 from .reporting import daily_report, html_report, performance_report, save_daily
 from .risk import PDTTracker, monte_carlo_ruin, probability_of_ruin
 from .session import TradingSession
@@ -438,6 +439,95 @@ def cmd_config(args, cfg: Config) -> int:
     return 0
 
 
+def cmd_notify(args, cfg: Config) -> int:
+    journal = Journal(cfg.journal_db)
+    if args.action == "test":
+        n = Notifier(args.channels or ["console"], dry_run=args.dry_run)
+        print(f"channels: {[c.name for c in n.channels]}\n")
+        print(json.dumps({k: str(v) for k, v in n.test().items()}, indent=2))
+        return 0
+
+    if args.action == "gate":
+        verdict = AlertGate(cfg, journal).evaluate()
+        print("\nALERT VALIDATION GATE")
+        print("=" * 62)
+        for k, v in verdict.checks.items():
+            print(f"  {k:<20} {v}")
+        print()
+        if verdict.live_allowed:
+            print("  LIVE-TRADABLE — the strategy has met the validation bar.")
+        else:
+            print("  PAPER MODE — alerts will be stamped 'do not place this order'.")
+            print("  Blocking reasons:")
+            for r in verdict.reasons:
+                print(f"    - {r}")
+        return 0
+    return 0
+
+
+def cmd_watch(args, cfg: Config) -> int:
+    """Real-time loop: scan, alert, manage, repeat until the close."""
+    import time as _t
+    from datetime import time as _time_cls
+
+    if args.equity:
+        cfg.risk.starting_equity = args.equity
+
+    notifier = Notifier(
+        args.channels or ["console"],
+        dry_run=args.dry_run,
+        log_path=Path(cfg.reports_dir) / "alerts.jsonl",
+    )
+    session = TradingSession(cfg, dry_run=not args.live, notifier=notifier)
+
+    print(f"\nwatching {len(cfg.watchlist)} symbols every {args.interval}s")
+    print(f"  channels : {[c.name for c in notifier.channels]}")
+    print(f"  broker   : {session.broker.name} (dry_run={session.dry_run})")
+    print(f"  equity   : ${session._equity():,.2f}")
+
+    rem = session.pdt.remaining(session._equity())
+    print(f"  PDT      : {'unrestricted' if rem < 0 else f'{rem} day trade(s) left'}")
+
+    if not session.gate.live_allowed:
+        print("\n  " + "!" * 60)
+        print("  ALERTS ARE IN PAPER MODE — the strategy is not validated:")
+        for r in session.gate.reasons:
+            print(f"    - {r}")
+        print("  Signals will still arrive, stamped 'do not place this order'.")
+        print("  " + "!" * 60)
+
+    close_t = _parse_hhmm(cfg.session.market_close)
+    cycles = 0
+    try:
+        while cycles < args.max_cycles:
+            now = datetime.now()
+            if now.time() >= close_t and not args.ignore_clock:
+                print("\nmarket closed — running end of day")
+                break
+            session.run_once(now=now)
+            cycles += 1
+            if args.once:
+                break
+            _t.sleep(args.interval)
+    except KeyboardInterrupt:
+        print("\ninterrupted — positions left as-is; run `trady eod` to close out")
+        return 130
+
+    if not args.once:
+        result = session.end_of_day()
+        print(f"\nday done: ${result['realized_pnl']:+,.2f} over "
+              f"{result['trades']} trades")
+        print(result["review"].report())
+    return 0
+
+
+def _parse_hhmm(hhmm: str):
+    from datetime import time as _t
+
+    h, m = hhmm.split(":")
+    return _t(int(h), int(m))
+
+
 # =====================================================================
 #  Parser
 # =====================================================================
@@ -550,6 +640,26 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("what", choices=["trades", "open", "signals", "events", "reviews"])
     s.add_argument("--limit", type=int, default=25)
     s.set_defaults(func=cmd_journal)
+
+    s = sub.add_parser("watch", help="real-time loop with phone alerts")
+    s.add_argument("--channels", nargs="+",
+                   choices=["console", "ntfy", "pushover", "telegram", "email"])
+    s.add_argument("--interval", type=int, default=300, help="seconds between scans")
+    s.add_argument("--live", action="store_true", help="actually route orders")
+    s.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="print alerts instead of sending them")
+    s.add_argument("--once", action="store_true", help="single pass then exit")
+    s.add_argument("--max-cycles", type=int, default=200, dest="max_cycles")
+    s.add_argument("--ignore-clock", action="store_true", dest="ignore_clock")
+    s.add_argument("--equity", type=float)
+    s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("notify", help="test alerts / check the validation gate")
+    s.add_argument("action", choices=["test", "gate"])
+    s.add_argument("--channels", nargs="+",
+                   choices=["console", "ntfy", "pushover", "telegram", "email"])
+    s.add_argument("--dry-run", action="store_true", dest="dry_run")
+    s.set_defaults(func=cmd_notify)
 
     s = sub.add_parser("config", help="show or set configuration")
     s.add_argument("--set", nargs="+", metavar="section.key=value")

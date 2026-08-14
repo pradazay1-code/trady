@@ -56,12 +56,20 @@ class TradingSession:
         journal: Journal | None = None,
         broker: Broker | None = None,
         dry_run: bool = True,
+        notifier=None,
     ):
         cfg.ensure_dirs()
         self.cfg = cfg
         self.journal = journal or Journal(cfg.journal_db)
         self.broker = broker or make_broker(cfg, cfg.risk.starting_equity)
         self.dry_run = dry_run
+        self.notifier = notifier
+
+        # Whether alerts may be presented as live-tradable, or must carry the
+        # PAPER MODE stamp. Decided by measured performance, not by a flag.
+        from .notify import AlertGate
+
+        self.gate = AlertGate(cfg, self.journal).evaluate()
 
         self.pdt = PDTTracker(cfg.pdt)
         self.pdt.load(self.journal.day_trades())
@@ -239,6 +247,15 @@ class TradingSession:
             f"closed {pos.symbol} {pos.direction} x{pos.qty} @ {fill_px:.2f} "
             f"({reason}) net={net:+.2f}",
         )
+
+        if self.notifier is not None:
+            from .notify import exit_alert
+
+            self.notifier.send(
+                exit_alert(pos.symbol, pos.direction, pos.qty, fill_px, reason,
+                           net, result.get("r_multiple")),
+                dedupe_key=f"exit:{pos.symbol}:{now:%Y-%m-%d %H:%M}",
+            )
         return {"symbol": pos.symbol, "price": fill_px, "reason": reason, **result}
 
     # -----------------------------------------------------------------
@@ -286,6 +303,18 @@ class TradingSession:
             stop=sig.stop, target=sig.target, trade_id=trade_id, strategy=sig.strategy,
         )
         self.state.trades_today += 1
+
+        if self.notifier is not None:
+            from .notify import entry_alert
+
+            self.notifier.send(
+                entry_alert(
+                    sig, self._equity(),
+                    self.pdt.remaining(self._equity(), now.date()),
+                    live=self.gate.live_allowed and not self.dry_run,
+                ),
+                dedupe_key=f"entry:{sig.symbol}:{now:%Y-%m-%d %H:%M}",
+            )
         return {"symbol": sig.symbol, "qty": qty, "price": fill_px, "trade_id": trade_id}
 
     # -----------------------------------------------------------------
@@ -308,6 +337,13 @@ class TradingSession:
         if should and not self.state.halted:
             self.state.halted, self.state.halt_reason = True, why
             self.journal.log("halt", why)
+            if self.notifier is not None:
+                from .notify import risk_alert
+
+                self.notifier.send(
+                    risk_alert(why, "No further entries until the next session."),
+                    dedupe_key=f"halt:{now:%Y-%m-%d}",
+                )
 
         taken, considered, blocked = [], [], []
         if not self.state.halted:
@@ -414,6 +450,17 @@ class TradingSession:
         )
         report_path = save_daily(self.journal, self.cfg, now.date())
         review = self.learner.review(scope="daily")
+
+        if self.notifier is not None:
+            from .notify import summary_alert
+
+            self.notifier.send(
+                summary_alert(
+                    self.journal.stats(base_equity=self.cfg.risk.starting_equity),
+                    eq, self.state.realized_today,
+                ),
+                dedupe_key=f"summary:{now:%Y-%m-%d}",
+            )
         return {
             "date": now.date().isoformat(),
             "equity": eq,
