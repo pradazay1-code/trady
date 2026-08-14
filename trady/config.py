@@ -142,6 +142,10 @@ class ExecutionConfig:
     default_order_type: str = "limit"
     limit_offset_bps: float = 5.0
     require_confirmation: bool = True  # human ack before any live order
+    # Turns off the PAPER MODE stamp on alerts before the strategy has met the
+    # validation bar. Your account, your call — but the gate's failing checks
+    # are still recorded against every alert so the choice stays visible.
+    override_validation_gate: bool = False
 
 
 @dataclass

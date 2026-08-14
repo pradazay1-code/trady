@@ -248,3 +248,25 @@ class TestSessionAlerts:
 
         s = TradingSession(cfg, dry_run=True)
         assert s.notifier is None
+
+
+# =====================================================================
+#  Gate override
+# =====================================================================
+class TestGateOverride:
+    def test_override_opens_the_gate(self, cfg, journal):
+        assert AlertGate(cfg, journal).evaluate().live_allowed is False
+        cfg.execution.override_validation_gate = True
+        assert AlertGate(cfg, journal).evaluate().live_allowed is True
+
+    def test_override_still_records_what_was_failing(self, cfg, journal):
+        cfg.execution.override_validation_gate = True
+        v = AlertGate(cfg, journal).evaluate()
+        # The choice stays visible: reasons move into the checks, not away.
+        assert v.checks["OVERRIDDEN"] is True
+        assert len(v.checks["overridden_despite"]) >= 1
+
+    def test_override_defaults_off(self):
+        from trady.config import Config as _C
+
+        assert _C().execution.override_validation_gate is False

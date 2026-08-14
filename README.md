@@ -30,7 +30,18 @@ has an official API and supports full automation. Run the strategy there and
 keep Fidelity for longer-term holdings. That is a real decision with real
 tradeoffs; the code supports either.
 
-**2. Nobody can guarantee consistent profit, including this.** The books this
+**2. The strategy has been tested on real data and no edge was found.**
+Walk-forward across 16 time slices of real AAPL/MSFT/IBM/GOOG daily bars
+(2001–2013): 7 positive, 9 negative, **net −$793.92**. The full details, and the
+caveats that cut both ways, are in **[VALIDATION.md](VALIDATION.md)**. Trade the
+signal engine with real money only after a walk-forward on *intraday* data shows
+positive expectancy in most slices.
+
+What is validated is the risk machinery — sizing, stops, PDT tracking, bracket
+orders. `trady ticket` applies all of it to a trade idea you pick yourself, with
+no dependence on the signal engine. That part is usable today.
+
+**3. Nobody can guarantee consistent profit, including this.** The books this
 system is built from say so directly: *"Most day traders lose money... some
 research shows that 80 percent of day traders wash out in the first year."* and
 *"Anyone with a surefire system has already made a fortune and retired."*
@@ -39,7 +50,7 @@ loss limits, and an honest record — which is the part humans reliably fail at.
 Whether that produces profit depends on whether the strategy has a real edge,
 which only out-of-sample testing and paper trading will tell you.
 
-**3. If your account is under $25,000, the PDT rule governs everything.** FINRA
+**4. If your account is under $25,000, the PDT rule governs everything.** FINRA
 allows 3 day trades per rolling 5 business days below that threshold; the fourth
 gets you restricted to cash-only for 90 days. The agent enforces this as a hard
 block and keeps one trade in reserve for emergency exits. See
@@ -68,6 +79,24 @@ python3 -m trady risk                           # risk + PDT status
 Everything works offline with `--synthetic`, which generates realistic bars on a
 real trading calendar. **Synthetic data is for testing plumbing, never for
 judging profitability** — it is a random walk, so any "profit" on it is noise.
+
+---
+
+## Your own trade ideas, risk-managed (works today)
+
+The signal engine is unproven. The risk machinery is not — it is verified
+against the books' own worked examples. `ticket` bridges the two: you choose the
+symbol and side, it does the maths and writes the Fidelity bracket.
+
+```bash
+python3 -m trady ticket AAPL --equity 30000 --record
+python3 -m trady ticket NVDA --short --entry 131.20 --atr 2.4
+python3 -m trady close 1 --price 445.20 --reason target
+```
+
+It sizes the position (half-Kelly capped by Gann's 10%), places the stop outside
+single-bar noise, checks your PDT budget, writes a three-leg OTOCO ticket, and
+journals the trade so your real P&L accumulates into the same reports.
 
 ---
 
@@ -232,7 +261,7 @@ Full citations in `knowledge/rulebook.yaml`.
 
 ```bash
 pip install pytest
-python3 -m pytest tests/ -q          # 238 tests, ~7 min
+python3 -m pytest tests/ -q          # 247 tests, ~11 min
 python3 -m pytest tests/test_risk.py -q   # risk only, <1s
 ```
 
@@ -304,7 +333,7 @@ python3 -m trady kb --topics
 
 ## Status
 
-Working, 238 tests passing, verified end to end offline. Before risking money:
+Working, 247 tests passing, verified end to end offline. Before risking money:
 
 1. Backtest on **real** data for your symbols — synthetic proves nothing about edge.
 2. Walk-forward validate: `python3 -m trady backtest --walk-forward`.

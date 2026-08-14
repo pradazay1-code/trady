@@ -312,6 +312,26 @@ class AlertGate:
         self.journal = journal
 
     def evaluate(self) -> GateVerdict:
+        """Assess validation. An explicit override is honoured but recorded.
+
+        The account is the owner's and so is the risk decision. This gate exists
+        to make sure that decision is informed rather than accidental — not to
+        take it away. `execution.override_validation_gate` turns live labelling
+        back on, and the verdict still reports every check that was failing when
+        it was overridden.
+        """
+        verdict = self._assess()
+        if getattr(self.cfg.execution, "override_validation_gate", False):
+            return GateVerdict(
+                True,
+                [],
+                {**verdict.checks,
+                 "OVERRIDDEN": True,
+                 "overridden_despite": verdict.reasons},
+            )
+        return verdict
+
+    def _assess(self) -> GateVerdict:
         from .journal import compute_stats
 
         reasons: list[str] = []

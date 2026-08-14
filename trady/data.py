@@ -136,6 +136,41 @@ def from_alpaca(symbol: str, interval: str = "5Min", days: int = 60) -> pd.DataF
     return _normalise(df.set_index("date"), symbol)
 
 
+def from_bundled(symbol: str, days: int = 5000) -> pd.DataFrame:
+    """Real historical daily OHLCV bundled offline via `bokeh_sampledata`.
+
+    AAPL, GOOG, IBM, MSFT and FB, roughly 2000-2013 — real price action
+    including the dot-com unwind and the 2008 crash. This exists so the
+    strategy can be validated against genuine market structure (autocorrelation,
+    volatility clustering, trends, gaps) when a live feed is unavailable.
+
+    Two honest limits: these are DAILY bars, so the intraday session-clock rules
+    are not exercised, and the data ends in 2013 so it says nothing about
+    current market microstructure. It tests whether the signal logic has
+    predictive power on real prices — which is the question that matters most.
+    """
+    try:
+        from bokeh.sampledata import stocks as _stocks
+    except Exception as exc:  # noqa: BLE001
+        raise DataError(
+            "bundled data needs bokeh_sampledata: pip install bokeh_sampledata"
+        ) from exc
+
+    key = symbol.upper()
+    if not hasattr(_stocks, key):
+        available = [s for s in ("AAPL", "GOOG", "IBM", "MSFT", "FB")
+                     if hasattr(_stocks, s)]
+        raise DataError(f"{symbol} not bundled; available: {', '.join(available)}")
+
+    df = pd.DataFrame(getattr(_stocks, key))
+    df["date"] = pd.to_datetime(df["date"])
+    # Stamp bars mid-session so the session-clock gate sees a valid trading
+    # time. Daily bars carry no intraday timing information, so this is a
+    # modelling convenience, not a claim about when the trade happened.
+    df["date"] = df["date"] + pd.Timedelta(hours=11)
+    return _normalise(df.set_index("date"), symbol).tail(days)
+
+
 # ------------------------------------------------------------- synthetic
 def session_index(
     bars: int, interval_minutes: int = 5, start: str = "2024-01-02"
@@ -313,13 +348,15 @@ def load(
             df = from_stooq(symbol, days=days)
         elif provider == "alpaca":
             df = from_alpaca(symbol, interval, days)
+        elif provider == "bundled":
+            df = from_bundled(symbol, days=max(days, 3000))
         elif provider == "synthetic":
             df = synthetic(symbol, bars=max(400, days * 78))
         elif provider.startswith("csv:"):
             df = from_csv(provider.split(":", 1)[1], symbol)
         else:
             raise DataError(f"unknown provider {provider!r}")
-        if cache is not None and provider != "synthetic":
+        if cache is not None and provider not in ("synthetic", "bundled"):
             cache.put(symbol, interval, df)
         return df
     except Exception as exc:

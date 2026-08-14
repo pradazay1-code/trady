@@ -457,3 +457,38 @@ class TestLearner:
         j = self._journal_with(tmp_path, 30, 1.0)
         text = Learner(cfg, j).review(persist=False).report()
         assert "REVIEW" in text and "win rate" in text
+
+
+# =====================================================================
+#  Bundled real market data
+# =====================================================================
+class TestBundledData:
+    def test_loads_real_symbols(self):
+        df = datamod.from_bundled("AAPL")
+        assert len(df) > 1000
+        assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+
+    def test_bars_are_structurally_valid(self):
+        df = datamod.from_bundled("MSFT")
+        assert (df["high"] >= df["low"]).all()
+        assert (df["high"] >= df[["open", "close"]].max(axis=1)).all()
+        assert (df["volume"] > 0).all()
+
+    def test_index_is_sorted_and_unique(self):
+        df = datamod.from_bundled("IBM")
+        assert df.index.is_monotonic_increasing
+        assert df.index.is_unique
+
+    def test_unknown_symbol_lists_alternatives(self):
+        with pytest.raises(datamod.DataError, match="available"):
+            datamod.from_bundled("NOTREAL")
+
+    def test_reachable_through_load(self):
+        df = datamod.load("GOOG", provider="bundled")
+        assert len(df) > 500
+
+    def test_bars_stamped_inside_the_session(self):
+        # Daily bars carry no intraday time; stamped mid-session so the
+        # session-clock gate sees a valid trading hour.
+        df = datamod.from_bundled("AAPL")
+        assert df.index.hour.min() == df.index.hour.max() == 11

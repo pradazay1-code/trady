@@ -33,9 +33,10 @@ from .session import TradingSession
 
 
 def _load_frames(
-    cfg: Config, symbols: list[str], synthetic: bool, bars: int = 3000
+    cfg: Config, symbols: list[str], synthetic: bool, bars: int = 3000,
+    real: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    provider = "synthetic" if synthetic else cfg.data_provider
+    provider = "bundled" if real else ("synthetic" if synthetic else cfg.data_provider)
     cache = datamod.BarCache(Path(cfg.data_dir) / "bars.sqlite")
     out: dict[str, pd.DataFrame] = {}
     for i, sym in enumerate(symbols):
@@ -43,7 +44,7 @@ def _load_frames(
             df = datamod.load(
                 sym, provider=provider, interval=cfg.bar_interval,
                 days=cfg.history_days, cache=cache,
-            ) if not synthetic else datamod.synthetic(sym, bars=bars, seed=100 + i)
+            ) if not synthetic or real else datamod.synthetic(sym, bars=bars, seed=100 + i)
             out[sym] = df
             print(f"  {sym}: {len(df)} bars  {df.index[0]:%Y-%m-%d} → {df.index[-1]:%Y-%m-%d}")
         except Exception as exc:
@@ -57,7 +58,8 @@ def _load_frames(
 def cmd_scan(args, cfg: Config) -> int:
     symbols = args.symbols or cfg.watchlist
     print(f"Loading {len(symbols)} symbols...")
-    frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000))
+    frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000),
+                          real=getattr(args, 'real', False))
     if not frames:
         print("\nNo data. Use --synthetic to test the pipeline offline.")
         return 1
@@ -126,7 +128,8 @@ def cmd_analyze(args, cfg: Config) -> int:
 def cmd_backtest(args, cfg: Config) -> int:
     symbols = args.symbols or cfg.watchlist
     print(f"Loading {len(symbols)} symbols...")
-    frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000))
+    frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000),
+                          real=getattr(args, 'real', False))
     if not frames:
         print("\nNo data. Use --synthetic to test offline.")
         return 1
@@ -322,7 +325,8 @@ def cmd_fidelity(args, cfg: Config) -> int:
 
     if args.action == "tickets":
         symbols = args.symbols or cfg.watchlist
-        frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000))
+        frames = _load_frames(cfg, symbols, args.synthetic, getattr(args, 'bars', 3000),
+                          real=getattr(args, 'real', False))
         equity = args.equity or cfg.risk.starting_equity
         signals = strat.scan({s: enrich(d) for s, d in frames.items()}, cfg, equity,
                              journal.stats(base_equity=equity))
@@ -528,6 +532,128 @@ def _parse_hhmm(hhmm: str):
     return _t(int(h), int(m))
 
 
+def cmd_ticket(args, cfg: Config) -> int:
+    """Risk-manage YOUR trade idea and emit a Fidelity bracket ticket.
+
+    You choose the symbol and direction. This sizes the position, places the
+    stop outside single-bar noise, checks the PDT budget, and writes the OTOCO
+    ticket. None of that depends on the signal engine having an edge — the
+    sizing formulas are the books' own, verified against their worked examples.
+    """
+    from .brokers import FidelityBridge, Order
+    from .risk import position_size, stop_and_target
+
+    journal = Journal(cfg.journal_db)
+    equity = args.equity or cfg.risk.starting_equity
+    direction = "short" if args.short else "long"
+    sym = args.symbol.upper()
+
+    # --- price and volatility: from data if reachable, else from your input ---
+    atr_val = args.atr
+    entry = args.entry
+    if entry is None or atr_val is None:
+        try:
+            provider = "bundled" if args.real else cfg.data_provider
+            df = enrich(datamod.load(sym, provider=provider,
+                                     interval=cfg.bar_interval, days=cfg.history_days))
+            entry = entry if entry is not None else float(df["close"].iloc[-1])
+            atr_val = atr_val if atr_val is not None else float(df["atr_14"].iloc[-1])
+            noise = float((df["high"].tail(20) - df["low"].tail(20)).median())
+            print(f"  {sym}: last {entry:.2f}, ATR {atr_val:.3f}  (from {provider})")
+        except Exception as exc:
+            print(f"  could not load {sym}: {exc}")
+            print("  supply --entry and --atr manually (ATR from your Fidelity chart)")
+            return 1
+    else:
+        noise = atr_val
+
+    stop, target = stop_and_target(entry, atr_val, direction, cfg.risk, noise_floor=noise)
+    if args.stop is not None:
+        stop = args.stop
+    if args.target is not None:
+        target = args.target
+
+    sizing = position_size(equity, entry, stop, target, cfg.risk,
+                           stats=journal.stats(base_equity=equity))
+
+    # --- PDT budget ---
+    pdt = PDTTracker(cfg.pdt)
+    pdt.load(journal.day_trades())
+    can, why = pdt.can_day_trade(equity)
+
+    print(f"\n{'=' * 66}")
+    print(f"  {direction.upper()} {sym}")
+    print(f"{'=' * 66}")
+    print(f"  entry ............ {entry:.2f}")
+    print(f"  stop ............. {stop:.2f}   ({abs(entry-stop)/entry:.2%} away)")
+    print(f"  target ........... {target:.2f}   ({abs(target-entry)/entry:.2%} away)")
+    print(f"  reward:risk ...... {sizing.reward_risk:.2f}")
+    print(f"  shares ........... {sizing.shares}")
+    print(f"  notional ......... ${sizing.notional:,.2f}")
+    print(f"  risk if stopped .. ${sizing.risk_dollars:,.2f} "
+          f"({sizing.risk_pct_of_equity:.2%} of equity)")
+    print(f"  sizing method .... {sizing.method}")
+    if sizing.caps_applied:
+        print(f"  caps applied ..... {', '.join(sizing.caps_applied)}")
+
+    print(f"\n  PDT .............. {why}")
+    if sizing.reward_risk < cfg.risk.min_reward_risk:
+        print(f"\n  ⚠  reward:risk {sizing.reward_risk:.2f} is below your "
+              f"{cfg.risk.min_reward_risk:.2f} minimum — this setup pays too "
+              "little for what it risks")
+    if not sizing.ok:
+        print("\n  position sized to 0 shares — nothing to place")
+        return 1
+    if not can:
+        print("\n  PDT budget exhausted — placing this as a same-day round trip "
+              "risks a 90-day restriction")
+
+    # --- Fidelity bracket ticket ---
+    bridge = FidelityBridge(cfg.execution, Path(cfg.reports_dir) / "tickets")
+    side = "buy" if direction == "long" else "sell_short"
+    exit_side = "sell" if direction == "long" else "buy_to_cover"
+    off = entry * (cfg.execution.limit_offset_bps / 10_000)
+    bridge.pending = [
+        Order(sym, side, sizing.shares, "limit",
+              limit_price=round(entry + (off if side == "buy" else -off), 2),
+              note=f"ENTRY — manual idea, risk-managed by trady"),
+        Order(sym, exit_side, sizing.shares, "limit", limit_price=round(target, 2),
+              note="TARGET leg of the OTOCO bracket"),
+        Order(sym, exit_side, sizing.shares, "stop", stop_price=round(stop, 2),
+              note="STOP leg of the OTOCO bracket"),
+    ]
+    paths = bridge.write_tickets()
+    print(f"\n{Path(paths['txt']).read_text()}")
+    print("Place these as ONE OTOCO bracket in Active Trader Pro:")
+    print("  Trade > Directed Trade & Conditional > OTOCO")
+    print("  order 1 = entry, order 2 = target, order 3 = stop")
+    print("See FIDELITY_PLAYBOOK.md section 1 for the click path.\n")
+
+    if args.record:
+        sid = None
+        tid = journal.open_trade(
+            sym, direction, sizing.shares, entry, datetime.now(),
+            strategy="manual", signal_id=sid, planned_stop=stop,
+            planned_target=target, broker="fidelity(manual)",
+            notes=f"manual idea; R:R {sizing.reward_risk:.2f}",
+        )
+        print(f"journalled as trade #{tid} — close it with:")
+        print(f"  python3 -m trady close {tid} --price <fill> --reason target|stop\n")
+    return 0
+
+
+def cmd_close(args, cfg: Config) -> int:
+    """Close a journalled trade at your actual fill."""
+    journal = Journal(cfg.journal_db)
+    res = journal.close_trade(args.trade_id, args.price, datetime.now(), args.reason)
+    print(f"\n  trade #{args.trade_id} closed")
+    print(f"  net P&L .......... ${res['net_pnl']:+,.2f}")
+    if res.get("r_multiple") is not None:
+        print(f"  R multiple ....... {res['r_multiple']:+.2f}R")
+    print(f"  day trade ........ {res['is_day_trade']}")
+    return 0
+
+
 # =====================================================================
 #  Parser
 # =====================================================================
@@ -557,6 +683,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--synthetic", action="store_true")
     s.add_argument("--record", action="store_true", help="write signals to the journal")
     s.add_argument("--bars", type=int, default=3000, help="synthetic bar count")
+    s.add_argument("--real", action="store_true",
+                   help="real bundled daily OHLCV (AAPL/GOOG/IBM/MSFT)")
     s.set_defaults(func=cmd_scan)
 
     s = sub.add_parser("analyze", help="deep analysis of one symbol")
@@ -578,6 +706,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--verbose", action="store_true")
     s.add_argument("--out")
     s.add_argument("--bars", type=int, default=3000, help="synthetic bar count")
+    s.add_argument("--real", action="store_true",
+                   help="real bundled daily OHLCV (AAPL/GOOG/IBM/MSFT)")
     s.set_defaults(func=cmd_backtest)
 
     s = sub.add_parser("run", help="run a trading session")
@@ -614,6 +744,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--warmup", type=int, default=120)
     s.add_argument("--synthetic", action="store_true")
     s.add_argument("--bars", type=int, default=3000, help="synthetic bar count")
+    s.add_argument("--real", action="store_true",
+                   help="real bundled daily OHLCV (AAPL/GOOG/IBM/MSFT)")
     s.set_defaults(func=cmd_sweep)
 
     s = sub.add_parser("risk", help="current risk posture and PDT status")
@@ -660,6 +792,25 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["console", "ntfy", "pushover", "telegram", "email"])
     s.add_argument("--dry-run", action="store_true", dest="dry_run")
     s.set_defaults(func=cmd_notify)
+
+    s = sub.add_parser("ticket", help="risk-manage YOUR trade idea into a bracket order")
+    s.add_argument("symbol")
+    s.add_argument("--short", action="store_true", help="short instead of long")
+    s.add_argument("--entry", type=float, help="entry price (else last close)")
+    s.add_argument("--atr", type=float, help="ATR (else computed from data)")
+    s.add_argument("--stop", type=float, help="override the computed stop")
+    s.add_argument("--target", type=float, help="override the computed target")
+    s.add_argument("--equity", type=float)
+    s.add_argument("--real", action="store_true", help="use bundled real data")
+    s.add_argument("--record", action="store_true", help="journal it")
+    s.set_defaults(func=cmd_ticket)
+
+    s = sub.add_parser("close", help="close a journalled trade at your fill")
+    s.add_argument("trade_id", type=int)
+    s.add_argument("--price", type=float, required=True)
+    s.add_argument("--reason", default="manual",
+                   choices=["target", "stop", "manual", "eod_flat"])
+    s.set_defaults(func=cmd_close)
 
     s = sub.add_parser("config", help="show or set configuration")
     s.add_argument("--set", nargs="+", metavar="section.key=value")

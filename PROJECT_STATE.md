@@ -3,7 +3,7 @@
 Session-to-session memory. Read this first when resuming; update it before
 stopping. Nothing important should live only in a chat transcript.
 
-**Last updated:** 2026-08-13 (session 3)
+**Last updated:** 2026-08-14 (session 4)
 **Branch:** `claude/affectionate-wozniak-n301u3`
 
 ---
@@ -13,6 +13,35 @@ stopping. Nothing important should live only in a chat transcript.
 Session 1 built the system. Session 2 tested it and found a materially damaging
 stop-placement bug. Session 3 added phone alerts and the Fidelity playbook.
 Still nothing has touched a real account.
+
+### Session 4 — real-data validation
+
+**Found a route to real market data offline.** Network policy blocks every
+market-data host, but `bokeh_sampledata` ships genuine daily OHLCV for
+AAPL/GOOG/IBM/MSFT/FB (~2001-2013, 3,270 bars each) inside a PyPI package. Added
+as the `bundled` provider (`--real` on backtest/scan/sweep/ticket).
+
+**Ran the validation. No edge was found.** Walk-forward over 16 time slices:
+7 positive, 9 negative, net **-$793.92**. Full write-up in `VALIDATION.md`.
+
+A threshold sweep appeared to show an edge peaking at 2.0-2.5, but the trade
+counts were non-monotonic (2, 2, 7, 6, 32, 10) — a lower threshold admitting
+fewer trades means the threshold is not what governs trade count. It is
+position-slot starvation: 9.1-day average holding period against
+`max_open_positions=4`. The apparent tuning curve is an artefact, and the
++$747 full-sample result becomes -$794 out of sample. Textbook curve-fitting.
+
+**Made the validation gate overridable** (`execution.override_validation_gate`).
+The account is the owner's and so is the risk decision; the gate exists to make
+that decision informed, not to remove it. When overridden the verdict still
+records every check that was failing.
+
+**Added `ticket` and `close` commands.** The risk machinery does not depend on
+the signal engine having an edge, and it is verified. `ticket SYMBOL` sizes a
+trade idea *you* choose, places the stop outside noise, checks the PDT budget,
+emits a three-leg OTOCO bracket for Active Trader Pro, and journals it.
+`close <id> --price` records the real fill. This is the part that is honestly
+usable today.
 
 ### Session 3 — what changed
 
@@ -110,11 +139,16 @@ map are unconstrained, so an incomplete map never silently blocks trades.
 
 ## Known limitations
 
-- **No real market data has been through this.** The sandbox blocks market-data
-  hosts; everything was validated on synthetic bars. Synthetic data is a random
-  walk — it proves the plumbing, and proves nothing about edge.
-- **No demonstrated edge.** On synthetic data the strategy loses roughly what
-  fees and spread cost, which is the honest result for random data.
+- **No demonstrated edge on real data.** Walk-forward: 7/16 slices positive,
+  net -$793.92. See `VALIDATION.md`. Do not trade the signal engine live.
+- **Real-data test used DAILY bars, not intraday.** The strategy is built for
+  5-minute day trading; on daily bars the session clock never engages and
+  holding periods stretch to days. The intraday test still has not been run.
+- **Bundled data ends in 2013** and covers 4 symbols — 16 walk-forward samples
+  is thin for separating skill from luck.
+- **Position-slot starvation confounds daily-bar sweeps**: 9.1-day holding
+  period vs `max_open_positions=4` means most signals are blocked regardless of
+  threshold. Raise the cap or add a max holding period before re-sweeping.
 - **Fidelity execution is manual by design** — see README.
 - Sector map covers ~30 common symbols; anything else is unconstrained.
 - News and fundamentals are indexed but not wired into live signals.
@@ -132,10 +166,12 @@ map are unconstrained, so an incomplete map never silently blocks trades.
 
 0. **Confirm alerts reach the phone**: `notify test --channels ntfy` on a
    machine with network access.
-1. **Real data.** `python3 -m trady backtest AAPL MSFT NVDA --record` with
-   yfinance reachable. Everything below is meaningless until this is done.
-2. **Walk-forward it.** If expectancy is not positive across most slices, fix the
-   strategy — do not proceed to paper trading.
+1. **Intraday real data.** `backtest AAPL MSFT NVDA --record --walk-forward`
+   with yfinance reachable, 5-minute bars, 20+ symbols. This is the test the
+   system was designed for and the one that has not been run.
+2. **Fix slot starvation first** if testing on daily bars — raise
+   `max_open_positions` or add a maximum holding period, otherwise the sweep
+   measures queueing rather than the threshold.
 3. **Re-tune the confluence threshold** against real data. The 3.0 default came
    from reasoning, not measurement. `python3 -m trady sweep` exists for this.
 4. **Paper trade** for weeks: `run --loop` with `broker=paper`, then `eod` daily.
