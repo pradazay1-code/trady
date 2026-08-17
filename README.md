@@ -82,6 +82,72 @@ judging profitability** — it is a random walk, so any "profit" on it is noise.
 
 ---
 
+## Runs without you
+
+```bash
+python3 -m trady validate                  # full evidence pipeline, exit 0=pass 2=fail
+./scripts/schedule.sh install              # cron: validate 02:00, watch 09:55, eod 16:05
+```
+
+Two GitHub Actions workflows do it in the cloud, on a schedule, with nobody
+watching:
+
+| workflow | when | what |
+|---|---|---|
+| `.github/workflows/validate.yml` | 02:00 UTC weekdays | real **intraday** validation, uploads the report, pushes the verdict to your phone, **fails the build if the strategy does not validate** |
+| `.github/workflows/tests.yml` | every push | the full test suite |
+
+GitHub's runners have network access, which the build sandbox does not — so the
+intraday test that could not run locally runs there. A red badge on `validate`
+means: do not trade this.
+
+Set the `TRADY_NTFY_TOPIC` repository secret to get the nightly verdict pushed
+to your phone.
+
+`validate` is deliberately hard to pass. Alongside expectancy and drawdown it
+checks that the **threshold sweep is interpretable** — if trade counts do not
+fall as the threshold rises, entries are being gated by something other than the
+threshold and the sweep cannot be read as a tuning curve. That check exists
+because misreading exactly that pattern once made a losing strategy look
+tunable.
+
+---
+
+## Options
+
+```bash
+python3 -m trady option AAPL --strike 220 --dte 3 --bid 1.05 --ask 1.20 \
+        --volume 800 --open-interest 1500 --spot 215
+```
+
+Black-Scholes pricing and Greeks (verified against textbook references and
+put-call parity), contract selection, and sizing where max loss is the premium —
+"the most an option holder can lose is the amount paid for the option contract."
+
+The output that matters is the **true round-trip cost**:
+
+```
+  TRUE COST OF A 1-DAY HOLD
+    spread (x2) .... 13.3%
+    theta .......... 35.7% per day
+    commission ..... 1.2%
+    TOTAL .......... 50.2% of premium  [PROHIBITIVE]
+    the underlying must move +1.01% just to break even
+    ! far OTM with little time left: the most likely outcome is a 100% loss
+```
+
+That is a real 3-DTE AAPL call. Half the premium is gone in costs before
+direction matters. Options day trading is not stock day trading with more
+leverage — theta is a headwind measured in hours, and spreads are often 500x a
+stock's. The books call an option a *wasting asset*; this command quantifies
+exactly how fast it wastes.
+
+Contract selection defaults to 7–45 DTE and ~0.45 delta with liquidity floors,
+because cheap far-OTM contracts look like leverage and behave like lottery
+tickets.
+
+---
+
 ## Your own trade ideas, risk-managed (works today)
 
 The signal engine is unproven. The risk machinery is not — it is verified
@@ -261,7 +327,7 @@ Full citations in `knowledge/rulebook.yaml`.
 
 ```bash
 pip install pytest
-python3 -m pytest tests/ -q          # 247 tests, ~11 min
+python3 -m pytest tests/ -q          # 298 tests, ~11 min
 python3 -m pytest tests/test_risk.py -q   # risk only, <1s
 ```
 
@@ -284,6 +350,9 @@ trade:
 - **`test_notify.py`** — alert content (every alert must carry a stop), and the
   validation gate: a winning strategy on synthetic data must still fail to
   validate.
+- **`test_options.py`** — Black-Scholes pinned to textbook values and put-call
+  parity, theta negative and accelerating into expiry, max loss equal to premium,
+  and illiquid contracts rejected with a stated reason.
 
 ## Layout
 
@@ -303,6 +372,8 @@ trady/
   reporting.py    daily, cumulative, and HTML reports
   session.py      the trading day
   notify.py       phone alerts + the live-trading validation gate
+  options.py      Black-Scholes, Greeks, true round-trip cost, contract choice
+  validate.py     unattended validation pipeline and verdict
   cli.py          command line
 
 knowledge/
@@ -333,7 +404,7 @@ python3 -m trady kb --topics
 
 ## Status
 
-Working, 247 tests passing, verified end to end offline. Before risking money:
+Working, 298 tests passing, verified end to end offline. Before risking money:
 
 1. Backtest on **real** data for your symbols — synthetic proves nothing about edge.
 2. Walk-forward validate: `python3 -m trady backtest --walk-forward`.

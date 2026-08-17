@@ -1,0 +1,137 @@
+name: validate
+
+# Unattended strategy validation.
+#
+# This is the test that could not run in the build sandbox: GitHub's runners
+# have outbound network access, so yfinance is reachable and the strategy can
+# finally be measured on real INTRADAY bars — the data it was actually designed
+# for.
+#
+# It runs on a schedule with nobody watching, uploads the report, and fails the
+# job when the strategy does not validate. A red badge means "do not trade this".
+
+on:
+  schedule:
+    # 02:00 UTC on weekdays — after the US close, before the next open.
+    - cron: "0 2 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Symbols to validate (space separated)"
+        required: false
+        default: "SPY QQQ AAPL MSFT NVDA AMD TSLA AMZN META GOOGL"
+      interval:
+        description: "Bar interval (5m, 15m, 1h, 1d)"
+        required: false
+        default: "5m"
+      days:
+        description: "Days of history (Yahoo caps intraday at 60)"
+        required: false
+        default: "60"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy lxml beautifulsoup4 pyyaml yfinance bokeh_sampledata
+
+      - name: Rebuild knowledge base
+        run: python3 tools/build_kb.py knowledge/extracted knowledge/kb.sqlite
+
+      - name: Validate on real intraday data
+        id: validate
+        continue-on-error: true
+        env:
+          SYMBOLS: ${{ github.event.inputs.symbols || 'SPY QQQ AAPL MSFT NVDA AMD TSLA AMZN META GOOGL' }}
+          INTERVAL: ${{ github.event.inputs.interval || '5m' }}
+          DAYS: ${{ github.event.inputs.days || '60' }}
+        run: |
+          set +e
+          python3 -m trady validate $SYMBOLS \
+            --interval "$INTERVAL" --days "$DAYS" \
+            --splits 4 --min-trades 100
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Fallback — bundled real daily data
+        # If the live feed is unreachable (rate limits, outages), still produce
+        # evidence rather than nothing at all.
+        if: steps.validate.outputs.exit_code == '1'
+        continue-on-error: true
+        run: |
+          python3 -m trady validate AAPL MSFT IBM GOOG --real --splits 4 \
+            --min-trades 30 || true
+
+      - name: Show verdict
+        run: |
+          echo "## Validation verdict" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f reports/validation_latest.txt ]; then
+            cat reports/validation_latest.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no report produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ github.run_number }}
+          path: reports/
+          retention-days: 90
+
+      - name: Push the verdict to your phone
+        # Optional. Set the TRADY_NTFY_TOPIC repository secret to enable.
+        if: always() && env.TRADY_NTFY_TOPIC != ''
+        env:
+          TRADY_NTFY_TOPIC: ${{ secrets.TRADY_NTFY_TOPIC }}
+        run: |
+          VERDICT=$(python3 -c "
+          import json, pathlib
+          p = pathlib.Path('reports/validation_latest.json')
+          if p.exists():
+              d = json.loads(p.read_text())
+              fs = d.get('full_sample', {})
+              print(('VALIDATED' if d.get('validated') else 'NOT validated')
+                    + f\" | {fs.get('trades', 0)} trades\"
+                    + f\" | expectancy {fs.get('expectancy', 0):+.4%}\"
+                    + f\" | net \${fs.get('net_pnl', 0):+,.2f}\")
+          else:
+              print('validation produced no report')
+          " || echo "verdict unavailable")
+          curl -sS -H "Title: Trady nightly validation" \
+               -d "$VERDICT" "https://ntfy.sh/$TRADY_NTFY_TOPIC" || true
+
+      - name: Fail the job when the strategy does not validate
+        run: |
+          if [ ! -f reports/validation_latest.json ]; then
+            echo "::error::validation produced no report"; exit 1
+          fi
+          python3 -c "
+          import json, sys, pathlib
+          d = json.loads(pathlib.Path('reports/validation_latest.json').read_text())
+          failed = [c['name'] for c in d.get('criteria', []) if not c.get('passed')]
+          if d.get('validated'):
+              print('VALIDATED')
+              sys.exit(0)
+          print('NOT VALIDATED — failing criteria:')
+          for f in failed:
+              print('  -', f)
+          print()
+          print('A red badge here means the strategy has not earned real money.')
+          sys.exit(1)
+          "

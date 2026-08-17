@@ -319,3 +319,90 @@ Setting up ntfy (easiest, free, no account):
 
 Anyone who knows the topic name can read your alerts, and those alerts contain
 your position sizes. Treat the topic name like a password.
+
+---
+
+## 8. Options at Fidelity
+
+### Approval levels
+
+Options need separate approval: **Accounts & Trade → Account Features → Trading
+Restrictions → Options → Apply**.
+
+| Level | Allows |
+|---|---|
+| 1 | covered calls, cash-secured puts |
+| 2 | **+ long calls and long puts — what this system uses** |
+| 3 | + spreads |
+| 4 | + naked writing (unlimited risk) |
+
+Level 2 is enough. Do not apply for level 4 to day trade; naked writing has
+unbounded loss and nothing here is built for it.
+
+### Before every options trade, run the cost check
+
+```bash
+python3 -m trady option AAPL --strike 220 --dte 3 --bid 1.05 --ask 1.20 \
+        --volume 800 --open-interest 1500 --spot 215
+```
+
+Get bid, ask, volume and open interest from the Fidelity option chain
+(**Research → Options → Option Chain**, or the ATP chain window).
+
+The output tells you the one thing that decides the trade:
+
+```
+TOTAL .......... 50.2% of premium  [PROHIBITIVE]
+the underlying must move +1.01% just to break even
+```
+
+Half the premium gone in costs, on a one-day hold, before direction matters.
+That contract is not a trade; it is a fee with a lottery ticket attached.
+
+### Why options day trading is harder than stock day trading
+
+| | Stock | Option |
+|---|---|---|
+| spread on a liquid name | ~0.005% | 2–15% |
+| time decay | none | 5–40% **per day** near expiry |
+| max loss | your stop | 100% of premium, routinely |
+| being early | survivable | often fatal |
+
+The books call an option a **wasting asset**: *"as the option moves closer to
+its date of expiration, the value of the option declines"*, and *"current-month
+options decay at faster rates than longer-dated options."*
+
+The one real advantage: *"the most an option holder can lose is the amount paid
+for the option contract."* Loss is bounded. That is why sizing here works
+backwards from the premium.
+
+### Placing the order
+
+1. **Trade → Options** (or the ATP options ticket)
+2. Action: **Buy to Open**
+3. Contract: pick the exact expiry and strike from the ticket output
+4. Quantity: contracts, not shares — each covers 100 shares
+5. Order type: **Limit**, always. Never market an option; the spread will eat you
+6. TIF: **Day**
+
+Then immediately place a **Sell to Close limit** at your target.
+
+**On stops:** a stop order on a thin option can fill far from your price,
+because the "market" may be one wide quote. For options, prefer watching the
+position and closing manually, or set the stop against the *underlying's* price
+rather than the contract's.
+
+### Contract selection defaults, and why
+
+- **7–45 days to expiry.** Nearer decays fastest; 0–2 DTE is a coin flip with
+  100% downside.
+- **~0.45 delta** (near the money). The contract actually tracks the underlying.
+  Far-OTM contracts look like cheap leverage and behave like lottery tickets.
+- **Open interest ≥ 250, volume ≥ 25, spread ≤ 10%.** A contract you cannot exit
+  at a fair price is a position you do not control.
+
+### PDT applies to options too
+
+An option round trip opened and closed the same day is a day trade, same as
+stock. Under $25,000 it comes out of the same budget of 3 per rolling 5 business
+days.

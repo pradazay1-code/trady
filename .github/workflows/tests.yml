@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy lxml beautifulsoup4 pyyaml pytest bokeh_sampledata
+      - name: Build knowledge base
+        run: python3 tools/build_kb.py knowledge/extracted knowledge/kb.sqlite
+      - name: Run tests
+        run: python3 -m pytest tests/ -q --durations=10

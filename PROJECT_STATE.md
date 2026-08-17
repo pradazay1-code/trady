@@ -3,7 +3,7 @@
 Session-to-session memory. Read this first when resuming; update it before
 stopping. Nothing important should live only in a chat transcript.
 
-**Last updated:** 2026-08-14 (session 4)
+**Last updated:** 2026-08-14 (session 5)
 **Branch:** `claude/affectionate-wozniak-n301u3`
 
 ---
@@ -13,6 +13,44 @@ stopping. Nothing important should live only in a chat transcript.
 Session 1 built the system. Session 2 tested it and found a materially damaging
 stop-placement bug. Session 3 added phone alerts and the Fidelity playbook.
 Still nothing has touched a real account.
+
+### Session 5 — unattended validation + options
+
+**Runs without supervision now.**
+- `trady validate` runs the whole evidence pipeline (data → full-sample
+  backtest → walk-forward → threshold sweep → criteria) and exits 0 if
+  validated, 2 if not. Writes `reports/validation_latest.{txt,json}` at stable
+  paths so automation always knows where to look.
+- `.github/workflows/validate.yml` — 02:00 UTC weekdays. **GitHub runners have
+  network access, which this sandbox does not**, so the real intraday test that
+  has been blocked all along runs there. Uploads the report, pushes the verdict
+  to ntfy if `TRADY_NTFY_TOPIC` is set as a repo secret, and fails the build
+  when the strategy does not validate.
+- `.github/workflows/tests.yml` — full suite on every push.
+- `scripts/schedule.sh install` — cron on the user's own machine: validate
+  02:00, watch 09:55, eod 16:05.
+
+One validation criterion is worth calling out: **"sweep is interpretable"**
+fails when trade counts do not fall monotonically as the threshold rises. That
+is the exact pattern that made a losing strategy look tunable in session 4
+(position-slot starvation, not edge). It is now caught automatically instead of
+depending on someone noticing.
+
+**Options** (`trady/options.py`, `trady option`).
+- Black-Scholes with Greeks, no scipy dependency. Verified against the textbook
+  reference (ATM 1y 20% vol 5% rate = 10.4506), put-call parity to 4dp, and IV
+  round-trip.
+- `round_trip_cost_pct` is the centrepiece: spread paid twice + theta over the
+  hold + commission, converted via delta into the underlying move needed to
+  break even. A real 3-DTE OTM AAPL call scores **50.2% total cost for a
+  one-day hold** — 13.3% spread + 35.7%/day theta.
+- Sizing works backwards from max loss = premium, since that bound is the one
+  genuine advantage a long option has.
+- `select_contract` defaults to 7-45 DTE, ~0.45 delta, with liquidity floors,
+  and explains every rejection.
+- Fidelity ticket output including OCC symbol and approval level 2.
+
+**51 new options tests**, 298 total.
 
 ### Session 4 — real-data validation
 
@@ -153,6 +191,12 @@ map are unconstrained, so an incomplete map never silently blocks trades.
 - Sector map covers ~30 common symbols; anything else is unconstrained.
 - News and fundamentals are indexed but not wired into live signals.
 - Short selling assumes borrow is available; no locate check.
+- **Options are analysis-only.** There is no options chain provider wired in, so
+  bid/ask/volume/OI must be pasted from the Fidelity chain by hand. There is no
+  options backtest either — the signal engine trades the underlying, and options
+  sizing sits alongside it rather than inside it.
+- `validate` is slow (a full sweep is 5+ backtests). Prefer running it from CI
+  or cron rather than interactively.
 - Alert channels are unverified against live services — the sandbox blocks
   ntfy.sh, Pushover and Telegram, so delivery was tested through the console
   channel and the dry-run path only. `notify test` on a real machine is the
@@ -164,8 +208,10 @@ map are unconstrained, so an incomplete map never silently blocks trades.
 
 ## Next session — suggested order
 
-0. **Confirm alerts reach the phone**: `notify test --channels ntfy` on a
-   machine with network access.
+0. **Push the branch and let CI run.** `.github/workflows/validate.yml` will
+   execute the real intraday validation automatically on GitHub's runners. That
+   is the answer to "run the tests without me" and the result is the one number
+   that decides whether the signal engine is worth trading.
 1. **Intraday real data.** `backtest AAPL MSFT NVDA --record --walk-forward`
    with yfinance reachable, 5-minute bars, 20+ symbols. This is the test the
    system was designed for and the one that has not been run.

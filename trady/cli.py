@@ -654,6 +654,144 @@ def cmd_close(args, cfg: Config) -> int:
     return 0
 
 
+def cmd_validate(args, cfg: Config) -> int:
+    """Unattended validation. Exit code 0 = validated, 2 = not validated."""
+    from .validate import run_and_save
+
+    symbols = args.symbols or cfg.watchlist
+    provider = ("bundled" if args.real else
+                ("synthetic" if args.synthetic else cfg.data_provider))
+    print(f"validating on {len(symbols)} symbols via {provider}...\n")
+
+    rep, txt, js = run_and_save(
+        cfg, symbols, Path(cfg.reports_dir),
+        provider=provider, interval=args.interval or cfg.bar_interval,
+        days=args.days or cfg.history_days, warmup=args.warmup,
+        splits=args.splits, min_trades=args.min_trades,
+    )
+    print(rep.report())
+    print(f"\nwritten: {txt}\n         {js}")
+
+    if args.notify:
+        from .notify import Alert, Notifier, Priority
+
+        n = Notifier(args.channels or ["console"], dry_run=args.dry_run)
+        failed = [c.name for c in rep.criteria if not c.passed]
+        n.send(Alert(
+            title=("✅ Strategy VALIDATED" if rep.validated
+                   else "❌ Strategy NOT validated"),
+            body="\n".join([
+                f"trades: {rep.full_sample.get('trades', 0)}",
+                f"expectancy: {rep.full_sample.get('expectancy', 0):+.4%}",
+                f"net: ${rep.full_sample.get('net_pnl', 0):+,.2f}",
+                "" if rep.validated else "failing: " + ", ".join(failed[:4]),
+            ]),
+            priority=Priority.HIGH, kind="summary",
+        ))
+    return 0 if rep.validated else 2
+
+
+def cmd_option(args, cfg: Config) -> int:
+    """Analyse an option contract: Greeks, true round-trip cost, sizing."""
+    from datetime import date as _date, timedelta as _td
+
+    from .options import (
+        CONTRACT_MULTIPLIER, OptionContract, fidelity_option_order,
+        round_trip_cost_pct, size_option_position,
+    )
+
+    equity = args.equity or cfg.risk.starting_equity
+    expiry = (_date.fromisoformat(args.expiry) if args.expiry
+              else _date.today() + _td(days=args.dte))
+    kind = "put" if args.put else "call"
+
+    spot = args.spot
+    if spot is None:
+        try:
+            provider = "bundled" if args.real else cfg.data_provider
+            df = datamod.load(args.symbol, provider=provider,
+                              interval=cfg.bar_interval, days=cfg.history_days)
+            spot = float(df["close"].iloc[-1])
+            print(f"  {args.symbol}: spot {spot:.2f} (from {provider})")
+        except Exception as exc:
+            print(f"  need --spot (could not load {args.symbol}: {exc})")
+            return 1
+
+    strike = args.strike if args.strike is not None else round(spot)
+    c = OptionContract(
+        underlying=args.symbol.upper(), strike=strike, expiry=expiry, kind=kind,
+        bid=args.bid or 0.0, ask=args.ask or 0.0, volume=args.volume,
+        open_interest=args.open_interest, spot=spot,
+    )
+    if c.mid <= 0:
+        print("  supply --bid and --ask from the Fidelity option chain")
+        return 1
+
+    g = c.greeks()
+    cost = round_trip_cost_pct(c, hold_days=args.hold_days, contracts=1)
+    sizing = size_option_position(equity, c, cfg.risk,
+                                  stop_pct_of_premium=args.stop_pct)
+
+    print(f"\n{'=' * 68}")
+    print(f"  {c.describe()}   [{c.moneyness}, {c.days_to_expiry()} DTE]")
+    print(f"{'=' * 68}")
+    print(f"  OCC symbol ....... {c.occ_symbol}")
+    print(f"  bid/ask .......... {c.bid:.2f} / {c.ask:.2f}   mid {c.mid:.2f}")
+    print(f"  spread ........... {c.spread:.2f}  ({c.spread_pct:.1%} of premium)")
+    print(f"  intrinsic ........ {c.intrinsic:.2f}")
+    print(f"  extrinsic ........ {c.extrinsic:.2f}   <- this is what theta eats")
+    print(f"\n  GREEKS")
+    print(f"    delta .......... {g.delta:+.4f}   (${g.delta * 100:+.2f} per $1 move)")
+    print(f"    gamma .......... {g.gamma:+.5f}")
+    print(f"    theta .......... {g.theta:+.4f}   "
+          f"(${g.theta * CONTRACT_MULTIPLIER:+.2f} per contract per day)")
+    print(f"    vega ........... {g.vega:+.4f}")
+
+    print(f"\n  TRUE COST OF A {args.hold_days:g}-DAY HOLD")
+    print(f"    spread (x2) .... {cost.spread_cost_pct:.1%}")
+    print(f"    theta .......... {cost.theta_cost_pct_per_day:.1%} per day")
+    print(f"    commission ..... {cost.commission_cost_pct:.1%}")
+    print(f"    TOTAL .......... {cost.total_hold_cost_pct:.1%} of premium  "
+          f"[{cost.verdict.upper()}]")
+    print(f"    the underlying must move {cost.breakeven_underlying_move_pct:+.2%} "
+          "just to break even")
+    for n in cost.notes:
+        print(f"    ! {n}")
+
+    print(f"\n  SIZING (equity ${equity:,.0f})")
+    if sizing.ok:
+        print(f"    contracts ...... {sizing.contracts}")
+        print(f"    premium ........ ${sizing.total_premium:,.2f}")
+        print(f"    MAX LOSS ....... ${sizing.max_loss:,.2f}  "
+              f"(a long option cannot lose more than the premium)")
+        print(f"    stop at ........ ${sizing.stop_premium:.2f} "
+              f"(-{args.stop_pct:.0%} of premium)")
+        print(f"    target at ...... ${sizing.target_premium:.2f}")
+        print(f"    reward:risk .... {sizing.reward_risk:.2f}")
+    else:
+        print(f"    0 contracts — {', '.join(sizing.caps_applied)}")
+    if sizing.caps_applied and sizing.ok:
+        print(f"    caps ........... {', '.join(sizing.caps_applied)}")
+
+    if sizing.ok:
+        order = fidelity_option_order(c, sizing.contracts, "buy_to_open",
+                                      round(c.ask, 2))
+        print(f"\n  FIDELITY TICKET")
+        print(f"    Trade > Options.  Requires approval level "
+              f"{order['approval_level_required']}.")
+        print(f"    Action ......... Buy to Open")
+        print(f"    Contract ....... {order['description']}")
+        print(f"    Quantity ....... {order['quantity']}")
+        print(f"    Order type ..... Limit  @ {order['limit_price']:.2f}")
+        print(f"    TIF ............ Day")
+        print(f"    Cost ........... ${order['notional']:,.2f}")
+        print(f"\n    Set a sell-to-close limit at {sizing.target_premium:.2f} "
+              "and watch the stop manually — a stop order on a thin option")
+        print(f"    can fill far from your price.")
+    print()
+    return 0
+
+
 # =====================================================================
 #  Parser
 # =====================================================================
@@ -811,6 +949,37 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", default="manual",
                    choices=["target", "stop", "manual", "eod_flat"])
     s.set_defaults(func=cmd_close)
+
+    s = sub.add_parser("validate", help="unattended validation; exit 0=pass 2=fail")
+    s.add_argument("symbols", nargs="*")
+    s.add_argument("--interval")
+    s.add_argument("--days", type=int)
+    s.add_argument("--warmup", type=int, default=120)
+    s.add_argument("--splits", type=int, default=4)
+    s.add_argument("--min-trades", type=int, default=100, dest="min_trades")
+    s.add_argument("--real", action="store_true", help="bundled real daily data")
+    s.add_argument("--synthetic", action="store_true")
+    s.add_argument("--notify", action="store_true", help="push the verdict")
+    s.add_argument("--channels", nargs="+")
+    s.add_argument("--dry-run", action="store_true", dest="dry_run")
+    s.set_defaults(func=cmd_validate)
+
+    s = sub.add_parser("option", help="Greeks, true round-trip cost, and sizing")
+    s.add_argument("symbol")
+    s.add_argument("--put", action="store_true", help="put instead of call")
+    s.add_argument("--strike", type=float)
+    s.add_argument("--expiry", help="YYYY-MM-DD")
+    s.add_argument("--dte", type=int, default=30, help="days to expiry if no --expiry")
+    s.add_argument("--bid", type=float)
+    s.add_argument("--ask", type=float)
+    s.add_argument("--spot", type=float)
+    s.add_argument("--volume", type=int, default=0)
+    s.add_argument("--open-interest", type=int, default=0, dest="open_interest")
+    s.add_argument("--hold-days", type=float, default=1.0, dest="hold_days")
+    s.add_argument("--stop-pct", type=float, default=0.5, dest="stop_pct")
+    s.add_argument("--equity", type=float)
+    s.add_argument("--real", action="store_true")
+    s.set_defaults(func=cmd_option)
 
     s = sub.add_parser("config", help="show or set configuration")
     s.add_argument("--set", nargs="+", metavar="section.key=value")
