@@ -128,10 +128,64 @@ slices, this strategy has not earned real money.
 
 ---
 
+## The automated run
+
+`trady validate` now performs everything above unattended and returns a verdict.
+Output from an actual run on the bundled real data:
+
+```
+WALK-FORWARD
+  slices ........... 12
+  positive ......... 4/12  (33%)
+  total trades ..... 26
+  net across slices  $-348.16
+
+CRITERIA
+  [PASS] data available
+         4 symbol(s), 11,148 bars total
+  [FAIL] sample size
+         10 trades (need >= 30 to distinguish edge from luck)
+  [FAIL] positive expectancy (full sample)
+         -0.6008% per trade
+  [FAIL] profit factor > 1.2
+         profit factor 0.627
+  [PASS] drawdown within halt threshold
+         max drawdown 1.19% vs halt at 10%
+  [FAIL] walk-forward consistency
+         4/12 slices positive (33%); need >= 60%
+  [FAIL] walk-forward net positive
+         $-348.16 across all out-of-sample slices
+  [FAIL] sweep is interpretable
+         trade counts [6, 32, 10] are NOT monotonic — entries are gated by
+         something other than the threshold (likely position-slot starvation),
+         so the sweep cannot be read as a tuning curve
+
+  VERDICT: NOT VALIDATED
+  Do not trade the signal engine with real money on this evidence.
+```
+
+Six of eight criteria fail. Note the last one: the check caught the
+position-slot-starvation artefact automatically, which is the same trap that
+had to be spotted by hand the first time. That is the point of automating this
+— the failure mode does not depend on anyone being alert.
+
+The same command runs nightly in `.github/workflows/validate.yml` against real
+**intraday** data, which is the test that matters and the one that has not yet
+been run.
+
+---
+
 ## Reproducing
 
 ```bash
 pip install bokeh_sampledata
-python3 -m trady backtest AAPL MSFT IBM GOOG --real --record
+python3 -m trady validate AAPL MSFT IBM GOOG --real --min-trades 30
 python3 -m trady backtest AAPL MSFT IBM GOOG --real --walk-forward
+```
+
+Unattended, on a schedule:
+
+```bash
+./scripts/schedule.sh install     # cron on your machine
+# or just push — .github/workflows/validate.yml runs nightly on GitHub
 ```
